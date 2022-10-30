@@ -10,16 +10,18 @@ from typing import Any, Dict, Iterable, Optional, Union
 
 import dask
 import intake
+import logging
 import numpy as np
 import pandas as pd
 import urllib3
 import xarray as xr
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
 from pydantic import ValidationError
 
 from ldndctools.misc.geohash import coords2geohash_dec
 from ldndctools.misc.types import BoundingBox
 
+log = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -159,11 +161,11 @@ def inner_func(x, lat, lon):
 
 
 def geohash_xr(mask: xr.DataArray) -> xr.DataArray:
-    mask = mask.load()
+    #mask = mask.load()
     lon_xr = mask.lon.broadcast_like(mask)
     lat_xr = mask.lat.broadcast_like(mask)
     # TODO: allow  dask and when fixed remove mask.load())
-    data = xr.apply_ufunc(inner_func, mask, lat_xr, lon_xr, output_dtypes=[np.int64]) 
+    data = xr.apply_ufunc(inner_func, mask, lat_xr, lon_xr, output_dtypes=[np.int64], dask='allowed') 
     assert data.dtype == np.int64
     return data
 
@@ -193,6 +195,7 @@ def get_mask(mask_flag: str) -> xr.DataArray:
 
 
 def conf():
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "outfolder",
@@ -247,39 +250,54 @@ def conf():
     args = parser.parse_args()
     args.outfolder.mkdir(parents=True, exist_ok=True)
 
+    # create stream handler and set level to debug
+    sh = logging.StreamHandler()
+    sh.setLevel( logging.DEBUG)
+
+    # create formatter
+    formatter = logging.Formatter('[%(asctime)s - %(name)s - %(levelname)s - %(message)s]')
+
+    # add formatter to ch
+    sh.setFormatter( formatter)
+ 
+    # add stream handler to logger
+    log.addHandler( sh)
+
     return args
 
 
 def main():
-    client = Client(dashboard_address=":1234")
-
-    print(f"NOTE: You can see progress at {platform.node()}:1234 if bokeh is installed")
 
     args = conf()
+
+    cluster = LocalCluster( n_workers=10, memory_limit="15 GiB", dashboard_address=":1234")
+    client = Client( cluster)
+
+    log.info(f"NOTE: You can see progress at {platform.node()}:1234 if bokeh is installed")
 
     bbox = get_boundingbox(args.bbox)
     mask = get_mask(args.mask)
 
     # mask = xr.open_dataset("VN_MISC5_V2.nc")["rice_rot"]
     # mask = xr.where(mask > 0, 1, np.nan)
+
+    ##get data, dask array
     ds = subset_climate_data(
         bbox=bbox,  # BoundingBox(x1=101.5, x2=109.5, y1=8.0, y2=23.5),
         mask=mask,
-        # bbox=BoundingBox(x1=104.5, x2=105.5, y1=9.0, y2=10.0),
         date_min=args.date_min,
         date_max=args.date_max,
     )
 
-    tavg_year = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
-    tamp_year = ds.tavg.groupby("time.year").apply(amplitude).mean(dim="year")
-    prec_year = ds.prec.groupby("time.year").sum(dim="time").mean(dim="year")
-    wind_year = ds.wind.groupby("time.year").mean(dim="time").mean(dim="year")
+    log.debug(f"function done: subset_climate_data")
 
     stats = xr.Dataset()
-    stats["tavg"] = tavg_year
-    stats["tamp"] = tamp_year
-    stats["prec"] = prec_year
-    stats["wind"] = wind_year
+    stats["tavg"] = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
+    stats["tamp"] = ds.tavg.groupby("time.year").apply(amplitude).mean(dim="year")
+    stats["prec"] = ds.prec.groupby("time.year").sum(dim="time").mean(dim="year")
+    stats["wind"] = ds.wind.groupby("time.year").mean(dim="time").mean(dim="year")
+
+    log.debug(f"stats done")
 
     if mask is not None:
         stats["mask"] = mask
@@ -305,28 +323,33 @@ def main():
     stats["geohash"].attrs["missing_value"] = -1
 
     del stats["mask"]
+    log.debug(f"add geohash to stats done")
 
     # match coords (usually means take lat/ lon from ref dataset)
     ds = ds.assign_coords({"lat": stats.lat, "lon": stats.lon})
+    log.debug(f"assign coords done")
 
     df_stats = (
         stats.to_dataframe()
         .dropna(subset=["tavg", "tamp", "wind"], how="all")
         .reset_index()
     )
-    # ignore prec for now
 
+    log.debug(f"stats to dataframe done")
+
+    # ignore prec for now
     lookup: Dict[int, ClimateSiteStats] = {}
     for _, row in df_stats.iterrows():
         lookup[int(row["geohash"])] = ClimateSiteStats(
-            id=int(row["geohash"]),
-            latitude=row["lat"],
-            longitude=row["lon"],
-            wind_speed=row["wind"],
-            annual_precipitation=row["prec"],
-            temperature_average=row["tavg"],
-            temperature_amplitude=row["tamp"],
-        )
+                                        id=int(row["geohash"]),
+                                        latitude=float(row["lat"]),
+                                        longitude=float(row["lon"]),
+                                        wind_speed=float(row["wind"]),
+                                        annual_precipitation=float(row["prec"]),
+                                        temperature_average=float(row["tavg"]),
+                                        temperature_amplitude=float(row["tamp"]))
+
+    log.debug(f"lookup done")
 
     ds["geohash"] = stats["geohash"]
     ds = ds.stack(location=("lon", "lat"))
@@ -334,14 +357,20 @@ def main():
     ds = ds.set_coords("geohash")
     del ds["location"]
 
+    log.debug(f"location done")
+
     ddf = ds.to_dask_dataframe(dim_order=["geohash", "time"])
     ddf = ddf.loc[ddf.geohash > 0, :]
     ddf = ddf.set_index("geohash")
     ddf = ddf.repartition(npartitions=args.npart)
 
+    log.debug(f"repartition done")
+
     # ignore precip for now???
     ddf = ddf.dropna(subset=["tavg", "tmin", "tmax", "rad", "rh", "wind"], how="all")
     partitions = ddf.to_delayed(optimize_graph=True)
+
+    log.debug(f"partitions done")
 
     formatted = [
         dask.delayed(writer)(
@@ -350,7 +379,12 @@ def main():
         for i, part in enumerate(partitions)
     ]
 
+    log.debug(f"formatted done")
+
     processed_geohashs = dask.compute(*formatted)
+
+    log.debug(f"compute done")
+
     with open(args.outfolder / "ids.txt", "w") as out:
         for chunk_geohashs in processed_geohashs:
             out.write(" ".join([f"{ghash}" for ghash in chunk_geohashs]) + "\n")
