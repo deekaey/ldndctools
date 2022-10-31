@@ -301,6 +301,7 @@ def main():
 
     if mask is not None:
         stats["mask"] = mask
+        ds["mask"] = mask
         ## check that coords are close, then use those of reference file
         #coords_close = (
         #    np.allclose(mask.lat.values, stats.lat.values, atol=1e-05) *
@@ -316,6 +317,7 @@ def main():
         ##stats["mask"] = mask.reindex_like(stats.tavg, method="nearest", tolerance=1e-3)
     else:
         stats["mask"] = xr.ones_like(stats.tavg).where(stats.tavg > -100)
+        ds["mask"] = xr.ones_like(stats.tavg).where(stats.tavg > -100)
 
     stats = stats.where(stats.mask == 1)
     stats["geohash"] = geohash_xr(stats.mask)
@@ -326,11 +328,11 @@ def main():
     log.debug(f"add geohash to stats done")
 
     # match coords (usually means take lat/ lon from ref dataset)
-    ds = ds.assign_coords({"lat": stats.lat, "lon": stats.lon})
-    log.debug(f"assign coords done")
+    #ds = ds.assign_coords({"lat": stats.lat, "lon": stats.lon})
+    #log.debug(f"assign coords done")
 
     df_stats = (
-        stats.to_dataframe()
+        stats.to_dask_dataframe()
         .dropna(subset=["tavg", "tamp", "wind"], how="all")
         .reset_index()
     )
@@ -351,7 +353,9 @@ def main():
 
     log.debug(f"lookup done")
 
-    ds["geohash"] = stats["geohash"]
+    ds["geohash"] = geohash_xr( ds.mask)
+    ds["geohash"].attrs["_FillValue"] = -1
+    ds["geohash"].attrs["missing_value"] = -1
     ds = ds.stack(location=("lon", "lat"))
     ds = ds.swap_dims({"location": "geohash"})
     ds = ds.set_coords("geohash")
