@@ -112,7 +112,7 @@ temperature amplitude = {d.temperature_amplitude:.2f}
 
 
 def writer(
-    df: pd.DataFrame, pid: int, *, lookup: Dict[int, ClimateSiteStats], args: Any = None
+    df: pd.DataFrame, pid: int, *, args: Any = None
 ) -> Iterable[int]:
 
     buffer = io.StringIO()
@@ -123,7 +123,23 @@ def writer(
     all_hashes: Iterable[int] = []
     for geohash, gdf in df.groupby(df.index):
         geohash = int(geohash)
-        data = lookup[geohash]
+
+
+        #stats["tavg"] = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
+        #stats["tamp"] = ds.tavg.groupby("time.year").apply(amplitude).mean(dim="year")
+        #stats["prec"] = ds.prec.groupby("time.year").sum(dim="time").mean(dim="year")
+        #stats["wind"] = ds.wind.groupby("time.year").mean(dim="time").mean(dim="year")
+        yearly_mean = gdf.groupby([gdf.time.dt.year]).mean()
+        yearly_sum = gdf.groupby([gdf.time.dt.year]).sum()
+        #yearly_amp = gdf.groupby([gdf.time.dt.year]).apply(amplitude)
+        data = ClimateSiteStats(
+                                id=int(geohash),
+                                latitude=float( gdf.lat.mean()),
+                                longitude=float( gdf.lon.mean()),
+                                wind_speed=float( yearly_mean.wind.mean()),
+                                annual_precipitation=float( yearly_sum.prec.mean()),
+                                temperature_average=float( yearly_mean.tavg.mean()),
+                                temperature_amplitude=float(1.0))
         header = fill_header(data)
         buffer.write(header)
 
@@ -291,16 +307,7 @@ def main():
 
     log.debug(f"function done: subset_climate_data")
 
-    stats = xr.Dataset()
-    stats["tavg"] = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
-    stats["tamp"] = ds.tavg.groupby("time.year").apply(amplitude).mean(dim="year")
-    stats["prec"] = ds.prec.groupby("time.year").sum(dim="time").mean(dim="year")
-    stats["wind"] = ds.wind.groupby("time.year").mean(dim="time").mean(dim="year")
-
-    log.debug(f"stats done")
-
     if mask is not None:
-        stats["mask"] = mask
         ds["mask"] = mask
         ## check that coords are close, then use those of reference file
         #coords_close = (
@@ -316,42 +323,8 @@ def main():
         #stats["mask"][:] = mask.values
         ##stats["mask"] = mask.reindex_like(stats.tavg, method="nearest", tolerance=1e-3)
     else:
-        stats["mask"] = xr.ones_like(stats.tavg).where(stats.tavg > -100)
-        ds["mask"] = xr.ones_like(stats.tavg).where(stats.tavg > -100)
-
-    stats = stats.where(stats.mask == 1)
-    stats["geohash"] = geohash_xr(stats.mask)
-    stats["geohash"].attrs["_FillValue"] = -1
-    stats["geohash"].attrs["missing_value"] = -1
-
-    del stats["mask"]
-    log.debug(f"add geohash to stats done")
-
-    # match coords (usually means take lat/ lon from ref dataset)
-    #ds = ds.assign_coords({"lat": stats.lat, "lon": stats.lon})
-    #log.debug(f"assign coords done")
-
-    df_stats = (
-        stats.to_dask_dataframe()
-        .dropna(subset=["tavg", "tamp", "wind"], how="all")
-        .reset_index()
-    )
-
-    log.debug(f"stats to dataframe done")
-
-    # ignore prec for now
-    lookup: Dict[int, ClimateSiteStats] = {}
-    for _, row in df_stats.iterrows():
-        lookup[int(row["geohash"])] = ClimateSiteStats(
-                                        id=int(row["geohash"]),
-                                        latitude=float(row["lat"]),
-                                        longitude=float(row["lon"]),
-                                        wind_speed=float(row["wind"]),
-                                        annual_precipitation=float(row["prec"]),
-                                        temperature_average=float(row["tavg"]),
-                                        temperature_amplitude=float(row["tamp"]))
-
-    log.debug(f"lookup done")
+        tavg = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
+        ds["mask"] = xr.ones_like( tavg).where( tavg > -100)
 
     ds["geohash"] = geohash_xr( ds.mask)
     ds["geohash"].attrs["_FillValue"] = -1
@@ -378,7 +351,7 @@ def main():
 
     formatted = [
         dask.delayed(writer)(
-            part, i, lookup=dask.delayed(lookup), args=dask.delayed(args)
+            part, i, args=dask.delayed(args)
         )
         for i, part in enumerate(partitions)
     ]
