@@ -56,7 +56,7 @@ class BoundingBox:
 NODATA = -99.99
 
 
-# map from isiric-wise fields and units to ldndc
+# map from isric-wise fields and units to ldndc
 # ldndcname, conversion, significant digits
 nmap = {
     "TOTC": ("corg", 0.001, 5),

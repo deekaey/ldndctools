@@ -43,13 +43,28 @@ def create_dataset(
 
         xmlwriter = SiteXmlWriter(soil, res=res)
         if ('lat' in args) and ('lon' in args):
-            sel = soil._soil.sel(lat=args.lat, lon=args.lon, method='nearest')
+            delta = 0
+            found = False
+            while not found:
+                for la in [-1,1]:
+                    for lo in [-1,1]:
+                        if not found:
+                            sel = soil._soil.sel(lat=args["lat"]+la*delta, lon=args["lon"]+lo*delta, method='nearest')
+                            if sel['TopDep'].mean() > 0:
+                                found = True
+                delta += 0.1
+                if delta > 10:
+                    log.info("No valid data to process for this region/ bbox request.")
+                    exit(1)
+
             cid = coords2geohash_dec( lat=sel["lat"].values.item(), lon=sel["lon"].values.item())
             site_xml = xmlwriter.write(progressbar=progressbar, status_widget=status_widget, id_selection=[cid])
         else:
             site_xml = xmlwriter.write(progressbar=progressbar, status_widget=status_widget)
 
     else:
+        log.info("Incorrect selector.")
+        exit(1)
         # WARNING: THIS BRANCH IS DEFUNCT!!!
         soil.clip_mask_box(
             minx=min(selector.lons),

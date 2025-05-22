@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import urllib3
 import xarray as xr
-from dask.distributed import Client
+from dask.distributed import LocalCluster, Client
 from pydantic import ValidationError
 
 from ldndctools.misc.geohash import coords2geohash_dec
@@ -50,9 +50,22 @@ def subset_climate_data(
 
     with resources.path("data", "catalog.yml") as cat:
         catalog = intake.open_catalog(str(cat))
+        #load the data into a Dask Dataset
         ds = catalog["climate_era5land_hr"].to_dask()
-
+        ds = xr.open_zarr(
+            store="s3://era5land-zarr/data.zarr",
+            consolidated=True,
+            storage_options={
+                "anon": True,
+                "client_kwargs": {
+                    "endpoint_url": "https://s3.imk-ifu.kit.edu:10443",
+                    "verify": False
+                },
+                "use_ssl": True,
+            },
+        )
         if mask is not None:
+            #match the latitude and longitude coordinates of ds
             mask = mask.interp(lat=ds["lat"], lon=ds["lon"])
             ds = ds.where(mask>0)
 
@@ -249,7 +262,14 @@ def conf():
 
 
 def main():
-    client = Client(dashboard_address=":1234")
+
+    # Create a LocalCluster with 2 workers and set the dashboard address
+    cluster = LocalCluster(n_workers=2, memory_limit="2GB", dashboard_address=":1234")
+
+    # Connect a Client to the LocalCluster
+    client = Client(cluster)
+
+    #client = Client(dashboard_address=":1234")
 
     print(f"NOTE: You can see progress at {platform.node()}:1234 if bokeh is installed")
 
@@ -258,6 +278,7 @@ def main():
     bbox = get_boundingbox(args.bbox)
     mask = get_mask(args.mask)
 
+    print("subset climate")
     # mask = xr.open_dataset("VN_MISC5_V2.nc")["rice_rot"]
     # mask = xr.where(mask > 0, 1, np.nan)
     ds = subset_climate_data(
@@ -268,6 +289,7 @@ def main():
         date_max=args.date_max,
     )
 
+    print("group")
     tavg_year = ds.tavg.groupby("time.year").mean(dim="time").mean(dim="year")
     tamp_year = ds.tavg.groupby("time.year").apply(amplitude).mean(dim="year")
     prec_year = ds.prec.groupby("time.year").sum(dim="time").mean(dim="year")
@@ -307,6 +329,7 @@ def main():
     # match coords (usually means take lat/ lon from ref dataset)
     ds = ds.assign_coords({"lat": stats.lat, "lon": stats.lon})
 
+    print("df stats")
     df_stats = (
         stats.to_dataframe()
         .dropna(subset=["tavg", "tamp", "wind"], how="all")
@@ -314,6 +337,7 @@ def main():
     )
     # ignore prec for now
 
+    print("lookup")
     lookup: Dict[int, ClimateSiteStats] = {}
     for _, row in df_stats.iterrows():
         lookup[int(row["geohash"])] = ClimateSiteStats(

@@ -28,6 +28,7 @@ from ldndctools.extra import get_config, set_config
 from ldndctools.misc.create_data import create_dataset
 from ldndctools.misc.types import BoundingBox, RES
 from ldndctools.sources.soil.soil_iscricwise import ISRICWISE_SoilDataset
+from ldndctools.sources.soil.soil_national import NATIONAL_SoilDataset
 
 log = logging.getLogger(__name__)
 log.setLevel("INFO")
@@ -36,8 +37,8 @@ NODATA = "-99.99"
 
 # TODO: there has to be a better way here...
 #       also, tqdm takes no effect
-with resources.path("data", "") as dpath:
-    DPATH = Path(dpath)
+#with resources.path("data", "") as dpath:
+#    DPATH = Path(dpath)
 
 
 def main( **kwargs):
@@ -47,14 +48,13 @@ def main( **kwargs):
     # read config
     if 'config' in kwargs:
         cfg = kwargs['config']
-        for k,v in cfg.items():
-            setattr(args, k, v)
     else:
         cfg = get_config(args.config)
 
     # write config
-    if args.storeconfig:
-        set_config(cfg)
+    #if args.storeconfig:
+    #    set_config(cfg)
+
 
     # def _get_cfg_item(group, item, save="na"):
     #     return cfg[group].get(item, save)
@@ -69,9 +69,12 @@ def main( **kwargs):
     #     SOURCE=_get_cfg_item("project", "source"),
     # )
 
-    if (args.rcode is not None) or (args.file is not None):
+    if False: #(args.rcode is not None) or (args.file is not None):
         log.info("Non-interactive mode...")
         cfg["interactive"] = False
+    else:
+        pass
+        #log.info("Interactive mode...")
 
     # query environment or command flags for selection (non-interactive mode)
     args.rcode = os.environ.get("DLSC_REGION", args.rcode)
@@ -81,18 +84,20 @@ def main( **kwargs):
         log.error(f"Wrong resolution: {args.resolution}. Use HR, MR or LR.")
         exit(-1)
 
-    res = RES[args.resolution]
+    res = RES[cfg["resolution"]]
+
 
     bbox = None
-
-    if ('lat' in args) and ('lon' in args):
-       setattr(args, 'bbox', [float(args.lon-0.5), float(args.lat-0.5), float(args.lon+0.5), float(args.lat+0.5)]) 
+    if  ('lat' in cfg) and ('lon' in cfg):
+       cfg['bbox'] = [float(cfg["lon"]-1.0), float(cfg["lat"]-1.0), 
+                      float(cfg["lon"]+1.0), float(cfg["lat"]+1.0)]
        log.info("Creating bounding box for coordinates specified.")
-    if args.bbox:
-        if type( args.bbox) == list:
-            x1, y1, x2, y2 = args.bbox
-        else: 
-            x1, y1, x2, y2 = [float(x) for x in args.bbox.split(",")]
+
+    if cfg["bbox"]:
+        if type( cfg["bbox"]) == list:
+            x1, y1, x2, y2 = cfg["bbox"]
+        else:
+            x1, y1, x2, y2 = [float(x) for x in cfg["bbox"].split(",")]
         try:
             bbox = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2)
         except ValidationError:
@@ -100,19 +105,16 @@ def main( **kwargs):
             log.info("required: x1,y1,x2,y2 [cond: x1<x2, y1<y2]")
             log.info(f"given:    x1={x1},y1={y1},x2={x2},y2={y2}")
             exit(1)
+        log.info(f"given:    x1={x1},y1={y1},x2={x2},y2={y2}")
+        
+    if "outfile" not in cfg:
+        cfg["outfile"] = f"sites_{res.name}.xml"
 
-    if not args.outfile:
-        cfg["outname"] = f"sites_{res.name}.xml"
-    else:
-        cfg["outname"] = args.outfile
-        if all([x.value not in cfg["outname"] for x in RES.members()]):
-            if cfg["outname"].endswith(".xml"):
-                cfg["outname"] = f'{cfg["outname"][:-4]}_{res.name}.xml'
-            else:
-                cfg["outname"] = f'{cfg["outname"]}_{res.name}.xml'
+    if not cfg["outfile"].endswith(".xml"):
+        cfg["outfile"] = f'{cfg["outfile"]}.xml'
 
     log.info(f"Soil resolution: {res.name} {res.value}")
-    log.info(f'Outfile name:    {cfg["outname"]}')
+    log.info(f'Outfile name:    {cfg["outfile"]}')
 
     res_scale_mapper = {RES.LR: 50, RES.MR: 50, RES.HR: 10}
 
@@ -120,25 +122,32 @@ def main( **kwargs):
         catalog = intake.open_catalog(str(cat))
 
     df = catalog.admin(scale=res_scale_mapper[res]).read()
-    soil_raw = catalog.soil(res=res.name).read()
+    
+    print("config ", cfg)
+    if "soil" in cfg and cfg["soil"] == "national":
+        soil_raw = catalog.soil_national(res=res.name, port=8082).read()
+        print("soil_raw ",soil_raw)
+        soil = NATIONAL_SoilDataset( soil_raw)
+    else:
+        soil_raw = catalog.soil(res=res.name, port=8082).read()
+        soil = ISRICWISE_SoilDataset( soil_raw)
 
-    soil = ISRICWISE_SoilDataset(soil_raw)
-
-    if args.file:
+    if False: #args.file:
         selector = CoordinateSelection(args.file)
     else:
         selector = Selector(df)
 
-    if args.interactive:
+    if False: #args.interactive:
         res = ask_for_resolution(cfg)
         selector.ask()
-    else:
-        if rcode:
-            selector.set_region(rcode)
+    #else:
+    #    if rcode:
+    #        selector.set_region(rcode)
 
     if bbox:
         log.info(f"Setting bounding box to {bbox}")
         selector.set_bbox(bbox)
+        log.info(f"Setting bounding box to {bbox}")
     else:
         if isinstance(selector, Selector):
             log.info("Adjusting bounding box to selection extent")
@@ -152,18 +161,20 @@ def main( **kwargs):
             )
             selector.set_bbox(new_bbox)
 
-    log.info(selector.selected)
+    #log.info(selector.selected)
 
     with tqdm(total=1) as progressbar:
-        xml, nc = create_dataset(soil, selector, res, args, progressbar)
+        xml, nc = create_dataset(soil, selector, res, cfg, progressbar)
 
-    open(cfg["outname"], "w").write(xml)
-    ENCODING = {
-        "siteid": {"dtype": "int32", "_FillValue": -1, "zlib": True},
-        "soilmask": {"dtype": "int32", "_FillValue": -1, "zlib": True},
-    }
-    nc.to_netcdf(cfg["outname"].replace(".xml", ".nc"), encoding=ENCODING)
-
+    if ('output' in cfg) and cfg['output'] == 'stream':
+        return xml
+    else:
+        open( cfg["outfile"], "w").write(xml)
+        ENCODING = {
+            "siteid": {"dtype": "int32", "_FillValue": -1, "zlib": True},
+            "soilmask": {"dtype": "int32", "_FillValue": -1, "zlib": True},
+        }
+        nc.to_netcdf(cfg["outfile"].replace(".xml", ".nc"), encoding=ENCODING)
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,30 @@ plugins:
     - module: intake_geopandas
 
 sources:
+
+  soil_national:
+    name: 'SOIL national'
+    description: 'Default soil data for ldndctools (site file generation)'
+    driver: netcdf
+    parameters:
+      res:
+        default: 'LR'
+        allowed: ['LR', 'MR', 'HR']
+        description: 'Resolution (LR, MR or HR).'
+        type: str
+    args:
+      urlpath: 'simplecache::s3://ldndcdata/GLOBAL_WISESOIL_S1_{{res}}.nc'
+      storage_options:
+        s3:
+          anon: true
+          default_fill_cache: false
+          client_kwargs:
+            endpoint_url: 'https://s3.imk-ifu.kit.edu:{{port}}'
+            verify: False
+        simplecache:
+          cache_storage: '.cache'
+          same_names: true
+
   soil:
     name: 'SOIL'
     description: 'Default soil data for ldndctools (site file generation)'
@@ -21,7 +45,7 @@ sources:
           anon: true
           default_fill_cache: false
           client_kwargs:
-            endpoint_url: 'https://s3.imk-ifu.kit.edu:10443'
+            endpoint_url: 'https://s3.imk-ifu.kit.edu:{{port}}'
             verify: False
         simplecache:
           cache_storage: '.cache'
@@ -40,7 +64,7 @@ sources:
         description: 'Resolution (10, 50 or 110m).'
         type: int
     args:
-      urlpath: 'simplecache::https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/{{scale}}m/cultural/ne_{{scale}}m_admin_0_countries.zip'
+      urlpath: '/Users/kraus-d/projects/ldndctools-kraus/data/ne_50m_admin_0_countries.zip'
       use_fsspec: True
       storage_options:
         simplecache:
@@ -74,7 +98,6 @@ sources:
     driver: zarr
     args:
       urlpath: 's3://era5land-zarr/data.zarr'
-      consolidated: False
       storage_options:
         use_ssl: True
         anon: True

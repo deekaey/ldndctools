@@ -28,7 +28,7 @@ class VerbosityAction(argparse.Action):
         handlers = logging.getLogger().handlers
         for handler in handlers:
             if type(handler) is logging.StreamHandler:
-                handler.setLevel(logging.DEBUG)
+                handler.setLevel(logging.INFO)
         setattr(namespace, self.dest, True)
 
 

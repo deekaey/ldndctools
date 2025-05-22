@@ -85,10 +85,6 @@ class SoilDataset(ABC):
     @property
     def mask_3d(self) -> xr.DataArray:
         """return 3d mask to clip soildata"""
-        lev_max_idx = self.layer_mask.max(skipna=True).astype(int).item()
-        mask = (self.layer_mask.values >= np.arange(lev_max_idx)[:, None, None]).astype(
-            int
-        )
 
         for v in self.original.data_vars:
             if len(self.original[v].squeeze(drop=True).shape) == 3:
@@ -100,6 +96,10 @@ class SoilDataset(ABC):
         mask_3d = xr.ones_like(
             self.original[v].sel(lat=self.layer_mask.lat, lon=self.layer_mask.lon)
         )
+
+        lev_max_idx = np.shape(mask_3d)[0] #self.layer_mask.max(skipna=True).astype(int).item()
+        mask = (self.layer_mask.values >= np.arange(lev_max_idx)[:, None, None]).astype(int)
+
         mask_3d[:] = mask
         mask_3d = mask_3d.where(mask_3d == 1)
         return mask_3d
